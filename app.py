@@ -7,9 +7,8 @@ import os
 from datetime import datetime, timedelta
 
 # --- 1. UI & DARK MODE CONFIG ---
-st.set_page_config(page_title="EdgeLab v25.6", layout="wide")
+st.set_page_config(page_title="EdgeLab v25.7", layout="wide")
 
-# Inject Global CSS
 st.markdown("""
 <style>
     .main { background-color: #0d1117 !important; color: #c9d1d9; }
@@ -27,10 +26,12 @@ st.markdown("""
     .winner-text { color: #3fb950; font-weight: 800; font-size: 1.2rem; margin: 2px 0; }
     .status-badge { font-size: 0.6rem; background: #21262d; padding: 3px 8px; border-radius: 5px; color: #8b949e; border: 1px solid #30363d; }
     .score-text { font-size: 1.3rem; font-weight: 900; color: #ffffff; margin-top: 5px; }
+    .trend-up { color: #3fb950; font-size: 0.7rem; }
+    .trend-down { color: #f85149; font-size: 0.7rem; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. THE EVOLVING BRAIN ---
+# --- 2. THE EVOLVING BRAIN WITH RECENCY BIAS ---
 BRAIN_FILE = "nba_neural_v25.json"
 
 def get_brain():
@@ -44,6 +45,7 @@ def save_brain(brain):
     with open(BRAIN_FILE, 'w') as f: json.dump(brain, f)
 
 def live_learning_engine(brain):
+    """Updates weights with higher multipliers for recent games"""
     dates = [(datetime.now() - timedelta(1)).strftime('%Y%m%d'), datetime.now().strftime('%Y%m%d')]
     new_lessons = 0
     for d in dates:
@@ -56,9 +58,16 @@ def live_learning_engine(brain):
                     comp = event['competitions'][0]['competitors']
                     h, a = next(t for t in comp if t['homeAway'] == 'home'), next(t for t in comp if t['homeAway'] == 'away')
                     h_win = int(h.get('score', 0)) > int(a.get('score', 0))
+                    
+                    # RECENCY MULTIPLIER: 1.5x for games within last 48 hours
+                    multiplier = 1.5 
+                    
                     for team, won in [(h['team']['name'], h_win), (a['team']['name'], not h_win)]:
                         curr = brain['weights'].get(team, 50.0)
-                        brain['weights'][team] = round(curr + (0.85 if won else -0.45), 2)
+                        # Adjustment formula with recency weight
+                        adjustment = (0.85 * multiplier) if won else (-0.45 * multiplier)
+                        brain['weights'][team] = round(curr + adjustment, 2)
+                    
                     brain['last_learned_ids'].append(g_id)
                     brain['experience'] += 1
                     new_lessons += 1
@@ -76,7 +85,7 @@ def run_prediction(home_name, away_name, brain):
     winner = home_name if prob > 50 else away_name
     return {"winner": winner, "conf": round(prob if prob > 50 else (100-prob), 1), "h_w": h_w, "a_w": a_w}
 
-# --- 4. RENDERER (NO-INDENTATION FIX) ---
+# --- 4. RENDERER ---
 def draw_card(event, brain):
     teams = event['competitions'][0]['competitors']
     h = next(t for t in teams if t['homeAway'] == 'home')
@@ -84,11 +93,10 @@ def draw_card(event, brain):
     pred = run_prediction(h['team']['name'], a['team']['name'], brain)
     is_done = event['status']['type']['completed']
     
-    # Pre-calculating conditional HTML to keep the main block simple
     h_score = f'<div class="score-text">{h["score"]}</div>' if is_done else ''
     a_score = f'<div class="score-text">{a["score"]}</div>' if is_done else ''
     
-    # THE CRITICAL STEP: No indentation at the start of these lines
+    # Render with standard flex layout (v25.6 fix)
     html = f"""<div class="game-card">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
 <span class="status-badge">{event['status']['type']['shortDetail']}</span>
@@ -117,7 +125,7 @@ def draw_card(event, brain):
 BRAIN = get_brain()
 live_learning_engine(BRAIN)
 
-st.title("🛡️ EdgeLab v25.6 Neural")
+st.title("🛡️ EdgeLab v25.7 Neural (Recency Enabled)")
 
 tabs = st.tabs(["⏪ Yesterday", "📅 Today", "⏩ Tomorrow"])
 for i, tab in enumerate(tabs):
@@ -141,7 +149,7 @@ for i, tab in enumerate(tabs):
 with st.sidebar:
     st.header("🧠 Brain Status")
     st.metric("Exp Points", BRAIN['experience'])
-    st.write("Top Power Rankings:")
-    ranked = sorted(BRAIN['weights'].items(), key=lambda x: x[1], reverse=True)[:5]
+    st.write("Top Tier (Recent Form Weighted):")
+    ranked = sorted(BRAIN['weights'].items(), key=lambda x: x[1], reverse=True)[:8]
     for team, val in ranked:
         st.caption(f"**{team}**: {val}")
