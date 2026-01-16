@@ -1,180 +1,147 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from scipy.stats import norm
+import requests
+import json
+import os
 from datetime import datetime, timedelta
-from nba_api.stats.endpoints import scoreboardv2, leaguedashteamstats
 
-# --- 1. SYSTEM CONFIG & DARK THEME ---
-st.set_page_config(page_title="EdgeLab Intelligence v21.1", layout="wide")
+# --- 1. UI & DARK MODE CONFIG ---
+st.set_page_config(page_title="EdgeLab v25.6", layout="wide")
 
+# Inject Global CSS
 st.markdown("""
 <style>
-    .main { background-color: #0E1117; color: #FFFFFF; font-family: 'Inter', sans-serif; }
-    
-    .live-badge { 
-        background-color: #FF4B4B; color: white; padding: 3px 10px; 
-        border-radius: 4px; font-weight: bold; font-size: 0.75rem; 
-        animation: blinker 1.5s linear infinite;
+    .main { background-color: #0d1117 !important; color: #c9d1d9; }
+    .stApp { background-color: #0d1117; }
+    .stTabs [data-baseweb="tab-list"] { background-color: #0d1117; }
+    .stTabs [data-baseweb="tab"] {
+        background-color: #161b22; border: 1px solid #30363d;
+        border-radius: 8px 8px 0px 0px; color: #8b949e; padding: 10px 20px;
     }
-    @keyframes blinker { 50% { opacity: 0; } }
-
-    /* Dynamic Winner Boxes */
-    .winner-box { padding: 12px; border-radius: 8px; margin-bottom: 15px; border-left: 5px solid; }
-    .risk-low { background-color: #12221a; border-color: #00FFAA; box-shadow: 0 0 10px rgba(0,255,170,0.1); }
-    .risk-med { background-color: #222112; border-color: #FFD700; box-shadow: 0 0 10px rgba(255,215,0,0.1); }
-    .risk-high { background-color: #221212; border-color: #FF4B4B; box-shadow: 0 0 10px rgba(255,75,75,0.1); }
-    
-    .winner-name { font-weight: 800; font-size: 1.2rem; }
-    .risk-label { font-size: 0.7rem; text-transform: uppercase; font-weight: bold; margin-bottom: 5px; display: block; }
-
-    .accuracy-banner {
-        background: linear-gradient(90deg, #00FFAA 0%, #0088ff 100%);
-        color: #0E1117; padding: 15px; border-radius: 10px;
-        text-align: center; font-weight: 800; margin-top: 30px;
+    .stTabs [aria-selected="true"] { background-color: #1f6feb !important; color: white !important; }
+    .game-card { 
+        background: #161b22; border: 1px solid #30363d; border-radius: 12px; 
+        padding: 15px; margin-bottom: 20px; color: #c9d1d9;
     }
-
-    [data-testid="stMetricValue"] { font-size: 1.6rem !important; color: #FFFFFF !important; font-weight: 700; }
-    .stMetric { background: #161b22; padding: 12px; border-radius: 10px; border: 1px solid #30363d; }
-    [data-testid="stMetricLabel"] { color: #8b949e !important; font-size: 0.85rem !important; }
+    .winner-text { color: #3fb950; font-weight: 800; font-size: 1.2rem; margin: 2px 0; }
+    .status-badge { font-size: 0.6rem; background: #21262d; padding: 3px 8px; border-radius: 5px; color: #8b949e; border: 1px solid #30363d; }
+    .score-text { font-size: 1.3rem; font-weight: 900; color: #ffffff; margin-top: 5px; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. DYNAMIC INTELLIGENCE REPOSITORY ---
-@st.cache_data(ttl=3600)
-def get_live_team_stats():
-    try:
-        # Fetching Advanced Stats for all 30 teams
-        stats_df = leaguedashteamstats.LeagueDashTeamStats(
-            measure_type_detailed_defense='Advanced',
-            season='2025-26' # Ensure this matches current season
-        ).get_data_frames()[0]
-        
-        # Mapping Full Names to Nicknames (last word of name)
-        stats_df['NICKNAME'] = stats_df['TEAM_NAME'].str.split().str[-1]
-        
-        live_db = {}
-        for _, row in stats_df.iterrows():
-            live_db[row['NICKNAME']] = {
-                "off": row['OFF_RATING'],
-                "def": row['DEF_RATING'],
-                "pace": row['PACE'],
-                "id": row['TEAM_ID']
-            }
-        return live_db
-    except Exception as e:
-        return {}
+# --- 2. THE EVOLVING BRAIN ---
+BRAIN_FILE = "nba_neural_v25.json"
 
-# Global variable for current stats
-TEAM_DB = get_live_team_stats()
+def get_brain():
+    if os.path.exists(BRAIN_FILE):
+        try:
+            with open(BRAIN_FILE, 'r') as f: return json.load(f)
+        except: pass
+    return {"last_learned_ids": [], "weights": {}, "experience": 0}
 
-# --- 3. ANALYTICS ENGINE ---
-def run_ai_prediction(h_id, a_id, h_nickname, a_nickname):
-    # Lookup live stats; default to league median if team not found
-    h_stats = TEAM_DB.get(h_nickname, {"off": 114.5, "def": 114.5, "pace": 99.1})
-    a_stats = TEAM_DB.get(a_nickname, {"off": 114.5, "def": 114.5, "pace": 99.1})
+def save_brain(brain):
+    with open(BRAIN_FILE, 'w') as f: json.dump(brain, f)
+
+def live_learning_engine(brain):
+    dates = [(datetime.now() - timedelta(1)).strftime('%Y%m%d'), datetime.now().strftime('%Y%m%d')]
+    new_lessons = 0
+    for d in dates:
+        url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={d}"
+        try:
+            data = requests.get(url, timeout=5).json()
+            for event in data.get('events', []):
+                g_id = event['id']
+                if event['status']['type']['completed'] and g_id not in brain['last_learned_ids']:
+                    comp = event['competitions'][0]['competitors']
+                    h, a = next(t for t in comp if t['homeAway'] == 'home'), next(t for t in comp if t['homeAway'] == 'away')
+                    h_win = int(h.get('score', 0)) > int(a.get('score', 0))
+                    for team, won in [(h['team']['name'], h_win), (a['team']['name'], not h_win)]:
+                        curr = brain['weights'].get(team, 50.0)
+                        brain['weights'][team] = round(curr + (0.85 if won else -0.45), 2)
+                    brain['last_learned_ids'].append(g_id)
+                    brain['experience'] += 1
+                    new_lessons += 1
+        except: continue
+    if new_lessons > 0:
+        brain['last_learned_ids'] = brain['last_learned_ids'][-100:]
+        save_brain(brain)
+
+# --- 3. PREDICTION ENGINE ---
+def run_prediction(home_name, away_name, brain):
+    h_w, a_w = brain['weights'].get(home_name, 50.0), brain['weights'].get(away_name, 50.0)
+    diff = (h_w - a_w) + 2.85
+    sims = np.random.normal(diff, 11.0, 5000)
+    prob = np.mean(sims > 0) * 100
+    winner = home_name if prob > 50 else away_name
+    return {"winner": winner, "conf": round(prob if prob > 50 else (100-prob), 1), "h_w": h_w, "a_w": a_w}
+
+# --- 4. RENDERER (NO-INDENTATION FIX) ---
+def draw_card(event, brain):
+    teams = event['competitions'][0]['competitors']
+    h = next(t for t in teams if t['homeAway'] == 'home')
+    a = next(t for t in teams if t['homeAway'] == 'away')
+    pred = run_prediction(h['team']['name'], a['team']['name'], brain)
+    is_done = event['status']['type']['completed']
     
-    pace = (h_stats['pace'] + a_stats['pace']) / 2
-    h_proj = ((h_stats['off'] + 2.5 + a_stats['def']) / 2) * (pace / 100)
-    a_proj = ((a_stats['off'] + h_stats['def']) / 2) * (pace / 100)
+    # Pre-calculating conditional HTML to keep the main block simple
+    h_score = f'<div class="score-text">{h["score"]}</div>' if is_done else ''
+    a_score = f'<div class="score-text">{a["score"]}</div>' if is_done else ''
     
-    win_prob = norm.cdf((h_proj - a_proj) / 10.0) * 100
-    winner_name = h_nickname if h_proj > a_proj else a_nickname
-    prob = round(win_prob if h_proj > a_proj else (100 - win_prob), 1)
-    
-    # Sorting and Risk Logic
-    if prob >= 75:
-        risk_class, risk_text, sort_val = "risk-low", "Low Risk (Strong Play)", 3
-    elif prob >= 60:
-        risk_class, risk_text, sort_val = "risk-med", "Moderate Risk (Toss-up)", 2
-    else:
-        risk_class, risk_text, sort_val = "risk-high", "High Risk (Avoid)", 1
-        
-    return {
-        "h_score": round(h_proj, 1), "a_score": round(a_proj, 1),
-        "spread": round(a_proj - h_proj, 1), "winner_name": winner_name,
-        "winner_id": h_id if h_proj > a_proj else a_id, "prob": prob,
-        "risk_class": risk_class, "risk_text": risk_text, "sort_val": sort_val
-    }
+    # THE CRITICAL STEP: No indentation at the start of these lines
+    html = f"""<div class="game-card">
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+<span class="status-badge">{event['status']['type']['shortDetail']}</span>
+<span style="color:#58a6ff; font-weight:700; font-size:0.75rem;">{pred['conf']}% AI CONFIDENCE</span>
+</div>
+<div style="display:flex; justify-content:space-around; align-items:center; text-align:center;">
+<div style="flex:1;">
+<img src="{a['team']['logo']}" width="40"><br>
+<div style="font-size:0.75rem; font-weight:600; margin-top:5px;">{a['team']['name']}</div>
+{a_score}
+</div>
+<div style="flex:1.5; padding: 0 5px;">
+<div style="font-size:0.55rem; opacity:0.5; text-transform:uppercase;">Projected Winner</div>
+<div class="winner-text">{pred['winner']}</div>
+</div>
+<div style="flex:1;">
+<img src="{h['team']['logo']}" width="40"><br>
+<div style="font-size:0.75rem; font-weight:600; margin-top:5px;">{h['team']['name']}</div>
+{h_score}
+</div>
+</div>
+</div>"""
+    st.markdown(html, unsafe_allow_html=True)
 
-# --- 4. DATA FETCHING ---
-@st.cache_data(ttl=30)
-def fetch_daily_slate(target_date):
-    try:
-        f_date = target_date.strftime('%m/%d/%Y')
-        sb = scoreboardv2.ScoreboardV2(game_date=f_date).get_dict()
-        games_raw, lines_raw = sb['resultSets'][0]['rowSet'], sb['resultSets'][1]['rowSet']
-        
-        games_list = []
-        for g in games_raw:
-            g_id, h_id, a_id = g[2], g[6], g[7]
-            h_line = next((x for x in lines_raw if x[3] == h_id and x[2] == g_id), None)
-            a_line = next((x for x in lines_raw if x[3] == a_id and x[2] == g_id), None)
-            if h_line and a_line:
-                games_list.append({
-                    "game_id": g_id, "status": g[4], "h_id": h_id, "a_id": a_id,
-                    "h_nick": h_line[6], "a_nick": a_line[6],
-                    "h_score": h_line[22] or 0, "a_score": a_line[22] or 0, "period": g[9] or 0
-                })
-        return games_list
-    except: return []
+# --- 5. APP EXECUTION ---
+BRAIN = get_brain()
+live_learning_engine(BRAIN)
 
-# --- 5. UI RENDER ---
-st.title("🛡️ EdgeLab Intelligence v21.1")
-st.caption("Real-Time Analytics Dashboard | Dark Mode")
+st.title("🛡️ EdgeLab v25.6 Neural")
 
-tabs = st.tabs(["Yesterday", "Today's Slate", "Tomorrow"])
-dates = [datetime.now() - timedelta(1), datetime.now(), datetime.now() + timedelta(1)]
-
+tabs = st.tabs(["⏪ Yesterday", "📅 Today", "⏩ Tomorrow"])
 for i, tab in enumerate(tabs):
     with tab:
-        current_date = dates[i]
-        st.subheader(f"Schedule for {current_date.strftime('%A, %b %d')}")
-        raw_slate = fetch_daily_slate(current_date)
-        
-        if not raw_slate:
-            st.info("No games found for this date.")
+        offset = i - 1
+        date_str = (datetime.now() + timedelta(offset)).strftime('%Y%m%d')
+        try:
+            url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={date_str}"
+            slate = requests.get(url, timeout=5).json().get('events', [])
+        except:
+            slate = []
+            
+        if not slate:
+            st.info("No games scheduled.")
         else:
-            # Sort by confidence
-            analyzed_slate = []
-            for g in raw_slate:
-                g['pred'] = run_ai_prediction(g['h_id'], g['a_id'], g['h_nick'], g['a_nick'])
-                analyzed_slate.append(g)
-            
-            sorted_slate = sorted(analyzed_slate, key=lambda x: (x['pred']['sort_val'], x['pred']['prob']), reverse=True)
+            cols = st.columns(2)
+            for idx, event in enumerate(slate):
+                with cols[idx % 2]:
+                    draw_card(event, BRAIN)
 
-            correct_picks, completed_games = 0, 0
-            for g in sorted_slate:
-                pred = g['pred']
-                if "Final" in g['status']:
-                    completed_games += 1
-                    actual_winner_id = g['h_id'] if g['h_score'] > g['a_score'] else g['a_id']
-                    if pred['winner_id'] == actual_winner_id: correct_picks += 1
-
-                with st.container():
-                    c1, c2, c3 = st.columns([1, 2, 1])
-                    with c1: st.image(f"https://cdn.nba.com/logos/nba/{g['a_id']}/primary/L/logo.svg", width=60)
-                    with c2:
-                        st.write(f"**{g['a_nick']} @ {g['h_nick']}**")
-                        if "Live" in g['status'] or (g['period'] > 0 and i == 1):
-                            st.markdown("<span class='live-badge'>LIVE</span>", unsafe_allow_html=True)
-                        st.caption(f"Status: {g['status']}")
-                    with c3: st.image(f"https://cdn.nba.com/logos/nba/{g['h_id']}/primary/L/logo.svg", width=60)
-
-                    st.markdown(f"""
-                    <div class='winner-box {pred['risk_class']}'>
-                        <span class='risk-label' style='color:{'#00FFAA' if 'low' in pred['risk_class'] else '#FFD700' if 'med' in pred['risk_class'] else '#FF4B4B'}'>{pred['risk_text']}</span>
-                        <span class='winner-name'>{pred['winner_name']}</span> <small>({pred['prob']}%)</small>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                    m1, m2 = st.columns(2)
-                    with m1: st.metric(f"LIVE: {g['a_nick']} - {g['h_nick']}", f"{g['a_score']} - {g['h_score']}")
-                    with m2: st.metric(f"AI: {g['a_nick']} - {g['h_nick']}", f"{pred['a_score']} - {pred['h_score']}", delta=f"Spread: {pred['spread']}")
-                    st.divider()
-            
-            if completed_games > 0:
-                acc = round((correct_picks / completed_games) * 100, 1)
-                st.markdown(f"<div class='accuracy-banner'>AI ACCURACY FOR {current_date.strftime('%b %d')}: {acc}% ({correct_picks}/{completed_games} Correct)</div>", unsafe_allow_html=True)
-
-st.caption("v21.1 | Live API Feed | Automatic Accuracy & Sorting")
+with st.sidebar:
+    st.header("🧠 Brain Status")
+    st.metric("Exp Points", BRAIN['experience'])
+    st.write("Top Power Rankings:")
+    ranked = sorted(BRAIN['weights'].items(), key=lambda x: x[1], reverse=True)[:5]
+    for team, val in ranked:
+        st.caption(f"**{team}**: {val}")
