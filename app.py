@@ -4,7 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 from scipy.stats import norm
 from nba_api.live.nba.endpoints import scoreboard
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # --- 1. SYSTEM CONFIGURATION ---
 st.set_page_config(page_title="EdgeLab AI v18.0 - Ultimate Suite", layout="wide")
@@ -61,7 +61,6 @@ def get_auto_injuries():
     return ["Jalen Brunson", "Devin Booker", "Jayson Tatum"]
 
 def calculate_confidence(edge, sigma):
-    """Z-Score based confidence calculation mapping to 50-99.9%."""
     z_score = abs(edge) / sigma
     conf = (norm.cdf(z_score) - 0.5) * 2 * 100 
     return round(min(conf + 50, 99.9), 1)
@@ -94,19 +93,16 @@ def run_supreme_ai(h_name, a_name, active_injuries):
 
 def get_best_bets(ai, vegas, h_name, a_name):
     bets = []
-    # Spread
     s_edge = abs(ai['ai_spread'] - vegas['spread'])
     s_conf = calculate_confidence(s_edge, ai['sigma'])
     s_pick = f"{h_name} {format_spread(vegas['spread'])}" if ai['ai_spread'] < vegas['spread'] else f"{a_name} {format_spread(-vegas['spread'])}"
     bets.append({"type": "Spread", "pick": s_pick, "conf": s_conf})
 
-    # Total
     t_edge = abs(ai['ai_total'] - vegas['total'])
     t_conf = calculate_confidence(t_edge, ai['sigma'] * 1.4)
     t_pick = f"{'OVER' if ai['ai_total'] > vegas['total'] else 'UNDER'} {vegas['total']}"
     bets.append({"type": "Total", "pick": t_pick, "conf": t_conf})
 
-    # Moneyline
     implied_h_prob = 100 / (abs(vegas['h_ml']) + 100) if vegas['h_ml'] < 0 else 100 / (vegas['h_ml'] + 100)
     ml_edge = (ai['win_prob']/100) - implied_h_prob
     ml_conf = calculate_confidence(ml_edge * 10, 2.0)
@@ -114,67 +110,92 @@ def get_best_bets(ai, vegas, h_name, a_name):
 
     return sorted(bets, key=lambda x: x['conf'], reverse=True)
 
-# --- 4. INTERFACE ---
+# --- 4. DATA FETCHING (CACHED) ---
+
+@st.cache_data(ttl=600)  # Cache for 10 minutes
+def fetch_scoreboard_data(date_str=None):
+    """Fetches and caches scoreboard data to prevent redundant API calls."""
+    try:
+        if date_str:
+            sb = scoreboard.ScoreBoard(game_date=date_str)
+        else:
+            sb = scoreboard.ScoreBoard()
+        return sb.get_dict()['scoreboard']['games']
+    except Exception as e:
+        st.error(f"Live Sync Error: {e}")
+        return None
+
+# --- 5. MAIN INTERFACE ---
 st.title("🏀 EdgeLab Ultimate v18.0")
-st.write(f"**Live Engine:** Active | **Injuries:** Automated | **Date:** {datetime.now().strftime('%b %d, %Y')}")
 
-active_injuries = get_auto_injuries()
+# Fetch initial data for today
+board_data = fetch_scoreboard_data()
 
-try:
-    board_data = scoreboard.ScoreBoard().get_dict()['scoreboard']['games']
+if board_data:
+    # Check if all games for today are final (Status 3)
+    all_final = all(g['gameStatus'] == 3 for g in board_data)
     
-    for idx, g in enumerate(board_data):
-        h_team, a_team = g['homeTeam']['teamName'], g['awayTeam']['teamName']
-        h_full, a_full = f"{g['homeTeam']['teamCity']} {h_team}", f"{g['awayTeam']['teamCity']} {a_team}"
-        
-        status = g['gameStatusText']
-        is_live = g['gameStatus'] == 2 
-        live_label = f"<span class='live-dot'>● {status}</span>" if is_live else status
+    display_date = datetime.now()
+    if all_final:
+        display_date = datetime.now() + timedelta(days=1)
+        date_str = display_date.strftime('%Y-%m-%d')
+        st.info(f"📅 Today's slate complete. Showing Tomorrow's Projections: **{display_date.strftime('%b %d, %Y')}**")
+        # Re-fetch for next day
+        board_data = fetch_scoreboard_data(date_str)
+    else:
+        st.write(f"**Live Engine:** Active | **Injuries:** Automated | **Date:** {display_date.strftime('%b %d, %Y')}")
 
-        res = run_supreme_ai(h_full, a_full, active_injuries)
-        m_key = f"{a_team}@{h_team}"
-        v_data = VEGAS_MARKET.get(m_key, {"spread": -5.0, "total": 215.0, "h_ml": -200, "a_ml": 170})
-        
-        with st.container():
-            st.markdown(f"### {a_full} @ {h_full} | {live_label}", unsafe_allow_html=True)
+    active_injuries = get_auto_injuries()
+
+    if board_data:
+        for idx, g in enumerate(board_data):
+            h_team, a_team = g['homeTeam']['teamName'], g['awayTeam']['teamName']
+            h_full, a_full = f"{g['homeTeam']['teamCity']} {h_team}", f"{g['awayTeam']['teamCity']} {a_team}"
             
-            # LIVE SCORE & TRENDS
-            c_score, c_proj, c_bets = st.columns([1.2, 1.5, 1.5])
+            status = g['gameStatusText']
+            is_live = g['gameStatus'] == 2 
+            live_label = f"<span class='live-dot'>● {status}</span>" if is_live else status
+
+            res = run_supreme_ai(h_full, a_full, active_injuries)
+            m_key = f"{a_team}@{h_team}"
+            v_data = VEGAS_MARKET.get(m_key, {"spread": -5.0, "total": 215.0, "h_ml": -200, "a_ml": 170})
             
-            with c_score:
-                sc1, sc2 = st.columns(2)
-                sc1.markdown(f"<div class='score-box'>{g['awayTeam']['score']}</div>", unsafe_allow_html=True)
-                sc1.caption(f"{a_team}")
-                sc2.markdown(f"<div class='score-box'>{g['homeTeam']['score']}</div>", unsafe_allow_html=True)
-                sc2.caption(f"{h_team}")
+            with st.container():
+                st.markdown(f"### {a_full} @ {h_full} | {live_label}", unsafe_allow_html=True)
+                c_score, c_proj, c_bets = st.columns([1.2, 1.5, 1.5])
                 
-                curr_tot = g['awayTeam']['score'] + g['homeTeam']['score']
-                st.metric("Live Total", curr_tot, delta=f"{round(curr_tot - v_data['total'], 1)} vs Market")
+                with c_score:
+                    sc1, sc2 = st.columns(2)
+                    sc1.markdown(f"<div class='score-box'>{g['awayTeam']['score']}</div>", unsafe_allow_html=True)
+                    sc1.caption(f"{a_team}")
+                    sc2.markdown(f"<div class='score-box'>{g['homeTeam']['score']}</div>", unsafe_allow_html=True)
+                    sc2.caption(f"{h_team}")
+                    curr_tot = g['awayTeam']['score'] + g['homeTeam']['score']
+                    st.metric("Live Total", curr_tot, delta=f"{round(curr_tot - v_data['total'], 1)} vs Market")
 
-            with c_proj:
-                st.write("**AI ANALYTICS**")
-                p1, p2 = st.columns(2)
-                p1.metric("AI Score", f"{res['a_score']}-{res['h_score']}")
-                p1.metric("Win Prob", f"{res['win_prob']}%")
-                p2.metric("AI Spread", format_spread(res['ai_spread']))
-                p2.metric("AI Total", res['ai_total'])
+                with c_proj:
+                    st.write("**AI ANALYTICS**")
+                    p1, p2 = st.columns(2)
+                    p1.metric("AI Score", f"{res['a_score']}-{res['h_score']}")
+                    p1.metric("Win Prob", f"{res['win_prob']}%")
+                    p2.metric("AI Spread", format_spread(res['ai_spread']))
+                    p2.metric("AI Total", res['ai_total'])
 
-            with c_bets:
-                st.markdown("<div class='best-bet-header'>🎯 CONFIDENCE PICKS</div>", unsafe_allow_html=True)
-                for bet in get_best_bets(res, v_data, h_team, a_team):
-                    b_color = "conf-high" if bet['conf'] > 80 else "conf-med" if bet['conf'] > 65 else "conf-low"
-                    st.markdown(f"""
-                    <div class="bet-row">
-                        <small>{bet['type']}</small><br>
-                        <strong>{bet['pick']}</strong> | <span class="{b_color}">{bet['conf']}% Conf.</span>
-                    </div>
-                    """, unsafe_allow_html=True)
+                with c_bets:
+                    st.markdown("<div class='best-bet-header'>🎯 CONFIDENCE PICKS</div>", unsafe_allow_html=True)
+                    for bet in get_best_bets(res, v_data, h_team, a_team):
+                        b_color = "conf-high" if bet['conf'] > 80 else "conf-med" if bet['conf'] > 65 else "conf-low"
+                        st.markdown(f"""
+                        <div class="bet-row">
+                            <small>{bet['type']}</small><br>
+                            <strong>{bet['pick']}</strong> | <span class="{b_color}">{bet['conf']}% Conf.</span>
+                        </div>
+                        """, unsafe_allow_html=True)
 
-            if res['h_out'] or res['a_out']:
-                inj_html = "".join([f"<span class='injury-tag'>OUT: {p}</span>" for p in res['a_out'] + res['h_out']])
-                st.markdown(inj_html, unsafe_allow_html=True)
-            
-            st.divider()
-
-except Exception as e:
-    st.error(f"Live Sync Error: {e}")
+                if res['h_out'] or res['a_out']:
+                    inj_html = "".join([f"<span class='injury-tag'>OUT: {p}</span>" for p in res['a_out'] + res['h_out']])
+                    st.markdown(inj_html, unsafe_allow_html=True)
+                
+                st.divider()
+else:
+    st.warning("No data found for the current or upcoming slate.")
