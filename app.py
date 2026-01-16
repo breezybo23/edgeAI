@@ -7,7 +7,7 @@ import os
 from datetime import datetime, timedelta
 
 # --- 1. UI & DARK MODE CONFIG ---
-st.set_page_config(page_title="EdgeLab v26.3 Pro", layout="wide")
+st.set_page_config(page_title="EdgeLab v27.8 NBA Pro", layout="wide")
 
 st.markdown("""
 <style>
@@ -28,25 +28,22 @@ st.markdown("""
     .fatigue-pill { font-size: 0.55rem; background: #442d10; color: #e3b341; padding: 2px 6px; border-radius: 4px; margin-left: 5px; }
     .score-text { font-size: 1.3rem; font-weight: 900; color: #ffffff; margin-top: 5px; }
     .high-conf-border { border: 2px solid #3fb950 !important; }
+    .fantasy-pill { font-size: 0.6rem; background: #23392b; color: #4ade80; padding: 2px 8px; border-radius: 10px; margin-top: 5px; display: inline-block; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. BRAIN DATA ENGINE (PATCHED) ---
-BRAIN_FILE = "nba_neural_pro_v26.json"
+# --- 2. BRAIN DATA ENGINE ---
+BRAIN_FILE = "nba_neural_pro_v27.json"
 
 def get_brain():
-    """Safety Patch: Injects missing keys into old JSON files to prevent KeyErrors"""
     if os.path.exists(BRAIN_FILE):
         try:
             with open(BRAIN_FILE, 'r') as f:
                 data = json.load(f)
-                # HOT-FIX: If keys are missing, add them now
-                if 'hits' not in data: data['hits'] = 0
-                if 'misses' not in data: data['misses'] = 0
-                if 'streaks' not in data: data['streaks'] = {}
-                if 'weights' not in data: data['weights'] = {}
-                if 'experience' not in data: data['experience'] = 0
-                if 'last_learned_ids' not in data: data['last_learned_ids'] = []
+                # Ensure all metrics exist
+                for key in ['hits', 'misses', 'streaks', 'weights', 'experience', 'last_learned_ids']:
+                    if key not in data: 
+                        data[key] = {} if key in ['streaks', 'weights'] else ([] if key=='last_learned_ids' else 0)
                 return data
         except: pass
     return {"last_learned_ids": [], "weights": {}, "streaks": {}, "experience": 0, "hits": 0, "misses": 0}
@@ -54,12 +51,15 @@ def get_brain():
 def save_brain(brain):
     with open(BRAIN_FILE, 'w') as f: json.dump(brain, f)
 
-# --- 3. CORE LOGIC FUNCTIONS ---
+# --- 3. CORE NBA LOGIC ---
 def run_pro_prediction(home_name, away_name, brain, fatigue_list):
-    h_w, a_w = brain['weights'].get(home_name, 50.0), brain['weights'].get(away_name, 50.0)
+    h_w = brain['weights'].get(home_name, 50.0)
+    a_w = brain['weights'].get(away_name, 50.0)
+    
     h_fatigue = -3.5 if home_name in fatigue_list else 0
     a_fatigue = -3.5 if away_name in fatigue_list else 0
     
+    # NBA Base Spread Advantage + Weight Delta
     diff = (h_w + h_fatigue) - (a_w + a_fatigue) + 2.85
     sims = np.random.normal(diff, 10.5, 10000)
     prob = np.mean(sims > 0) * 100
@@ -67,39 +67,42 @@ def run_pro_prediction(home_name, away_name, brain, fatigue_list):
     return {"winner": winner, "conf": round(prob if prob > 50 else (100-prob), 1), "h_b2b": h_fatigue < 0, "a_b2b": a_fatigue < 0}
 
 def live_learning_engine(brain):
+    """Instant Audit: Scans recent games and updates sample size/win rate immediately"""
     dates = [(datetime.now() - timedelta(1)).strftime('%Y%m%d'), datetime.now().strftime('%Y%m%d')]
-    new_lessons = 0
+    updated = False
     for d in dates:
         url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={d}"
         try:
             data = requests.get(url, timeout=5).json()
             for event in data.get('events', []):
                 g_id = event['id']
+                # Check if game just finished and hasn't been audited yet
                 if event['status']['type']['completed'] and g_id not in brain['last_learned_ids']:
                     comp = event['competitions'][0]['competitors']
                     h, a = next(t for t in comp if t['homeAway'] == 'home'), next(t for t in comp if t['homeAway'] == 'away')
                     h_score, a_score = int(h.get('score', 0)), int(a.get('score', 0))
                     actual_winner = h['team']['name'] if h_score > a_score else a['team']['name']
                     
-                    # AUDIT: Grade previous prediction
+                    # Grade the AI's previous prediction for this game
                     pred = run_pro_prediction(h['team']['name'], a['team']['name'], brain, [])
-                    if pred['winner'] == actual_winner: brain['hits'] += 1
-                    else: brain['misses'] += 1
+                    if pred['winner'] == actual_winner:
+                        brain['hits'] += 1
+                    else:
+                        brain['misses'] += 1
 
-                    # WEIGHT UPDATES
+                    # Update Neural Weights
                     eff_mult = 1.2 if abs(h_score - a_score) > 15 else 1.0
                     for team_meta, won in [(h, h_score > a_score), (a, a_score > h_score)]:
                         name = team_meta['team']['name']
                         new_streak = (brain['streaks'].get(name, 0) + 1) if won else 0
                         brain['streaks'][name] = new_streak
-                        adj = (0.85 * 1.5 * eff_mult) if won else (-0.45 * 1.5)
-                        brain['weights'][name] = round(brain['weights'].get(name, 50.0) + adj + (1.0 if new_streak >=3 else 0), 2)
+                        adj = (1.25 * eff_mult) if won else (-0.75)
+                        brain['weights'][name] = round(brain['weights'].get(name, 50.0) + adj + (1.0 if new_streak >= 3 else 0), 2)
                     
                     brain['last_learned_ids'].append(g_id)
-                    brain['experience'] += 1
-                    new_lessons += 1
+                    updated = True
         except: continue
-    if new_lessons > 0: save_brain(brain)
+    if updated: save_brain(brain)
 
 def get_fatigue_status(date_str):
     prev_date = (datetime.strptime(date_str, '%Y%m%d') - timedelta(1)).strftime('%Y%m%d')
@@ -110,24 +113,32 @@ def get_fatigue_status(date_str):
 
 # --- 4. RENDERER ---
 def draw_pro_card(event, brain, fatigue_list, threshold):
-    teams = event['competitions'][0]['competitors']
+    comp = event['competitions'][0]
+    teams = comp['competitors']
     h, a = next(t for t in teams if t['homeAway'] == 'home'), next(t for t in teams if t['homeAway'] == 'away')
     pred = run_pro_prediction(h['team']['name'], a['team']['name'], brain, fatigue_list)
     
     if pred['conf'] < threshold: return 
     
+    # Fantasy Scraper (Top Performer)
+    perf_text = ""
+    try:
+        perf = comp['leaders'][0]['leaders'][0]
+        perf_text = f"⚡ {perf['athlete']['shortName']}: {perf['displayValue']}"
+    except: pass
+
     is_done = event['status']['type']['completed']
-    high_conf_class = "high-conf-border" if pred['conf'] >= 70 else ""
+    high_conf_class = "high-conf-border" if pred['conf'] >= 75 else ""
     
     html = f"""<div class="game-card {high_conf_class}">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
 <span class="status-badge">{event['status']['type']['shortDetail']}</span>
-<span style="color:{'#3fb950' if pred['conf'] >= 70 else '#58a6ff'}; font-weight:700; font-size:0.75rem;">
-{'⭐ ' if pred['conf'] >= 70 else ''}{pred['conf']}% AI PROJECTION</span>
+<span style="color:{'#3fb950' if pred['conf'] >= 75 else '#58a6ff'}; font-weight:700; font-size:0.75rem;">
+{'⭐ ' if pred['conf'] >= 75 else ''}{pred['conf']}% AI PROJECTION</span>
 </div>
 <div style="display:flex; justify-content:space-around; align-items:center; text-align:center;">
 <div style="flex:1;"><img src="{a['team']['logo']}" width="40"><div style="font-size:0.75rem; font-weight:600; margin-top:5px;">{a['team']['name']}{'<span class="fatigue-pill">B2B</span>' if pred['a_b2b'] else ''}</div>{f'<div class="score-text">{a["score"]}</div>' if is_done else ''}</div>
-<div style="flex:1.5;"><div style="font-size:0.55rem; opacity:0.5; text-transform:uppercase;">AI Pick</div><div class="winner-text">{pred['winner']}</div></div>
+<div style="flex:1.5;"><div style="font-size:0.55rem; opacity:0.5; text-transform:uppercase;">AI Pick</div><div class="winner-text">{pred['winner']}</div>{f'<div class="fantasy-pill">{perf_text}</div>' if perf_text else ''}</div>
 <div style="flex:1;"><img src="{h['team']['logo']}" width="40"><div style="font-size:0.75rem; font-weight:600; margin-top:5px;">{h['team']['name']}{'<span class="fatigue-pill">B2B</span>' if pred['h_b2b'] else ''}</div>{f'<div class="score-text">{h["score"]}</div>' if is_done else ''}</div>
 </div>
 </div>"""
@@ -135,27 +146,25 @@ def draw_pro_card(event, brain, fatigue_list, threshold):
 
 # --- 5. APP EXECUTION ---
 BRAIN = get_brain()
-live_learning_engine(BRAIN)
+live_learning_engine(BRAIN) # Runs every refresh to audit new results
 
-st.title("🛡️ EdgeLab v26.3 Pro Audit")
+st.title("🛡️ EdgeLab v27.8 NBA Live Audit")
 
-# Sidebar Metrics & Filter
 with st.sidebar:
     st.header("🧠 Neural Diagnostics")
-    # SAFE ACCURACY CALCULATION
     hits = BRAIN.get('hits', 0)
     misses = BRAIN.get('misses', 0)
-    total = hits + misses
-    acc = (hits / total * 100) if total > 0 else 0
+    total_audited = hits + misses
+    acc = (hits / total_audited * 100) if total_audited > 0 else 0
     
-    st.metric("Win Rate", f"{acc:.1f}%", help="Based on audited games")
-    st.caption(f"Sample Size: {total} games")
+    st.metric("Live Win Rate", f"{acc:.1f}%")
+    st.metric("Sample Size", f"{total_audited} Games")
+    st.caption("Updated instantly upon game completion.")
     
     st.divider()
-    st.subheader("⚙️ Prediction Filter")
-    conf_threshold = st.slider("Min Confidence Threshold", 50, 90, 50)
+    st.subheader("⚙️ Filter")
+    conf_threshold = st.slider("Confidence Threshold", 50, 95, 50)
 
-# Main Content
 tabs = st.tabs(["⏪ Yesterday", "📅 Today", "⏩ Tomorrow"])
 for i, tab in enumerate(tabs):
     with tab:
@@ -163,10 +172,9 @@ for i, tab in enumerate(tabs):
         fatigue_data = get_fatigue_status(date_str)
         try:
             slate = requests.get(f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={date_str}").json().get('events', [])
-        except: slate = []
-            
-        if not slate: st.info("No games scheduled.")
-        else:
-            cols = st.columns(2)
-            for idx, event in enumerate(slate):
-                with cols[idx % 2]: draw_pro_card(event, BRAIN, fatigue_data, conf_threshold)
+            if not slate: st.info("No games found.")
+            else:
+                cols = st.columns(2)
+                for idx, event in enumerate(slate):
+                    with cols[idx % 2]: draw_pro_card(event, BRAIN, fatigue_data, conf_threshold)
+        except: st.error("Sync Error")
