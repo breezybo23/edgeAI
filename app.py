@@ -2,119 +2,149 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from scipy.stats import norm
-from nba_api.live.nba.endpoints import scoreboard as live_scoreboard
-from nba_api.stats.endpoints import scoreboardv2 as stats_scoreboard
 from datetime import datetime, timedelta
+from nba_api.stats.endpoints import scoreboardv2
 
-# --- 1. SYSTEM CONFIGURATION ---
-st.set_page_config(page_title="EdgeLab AI v18.5", layout="wide")
+# --- 1. SYSTEM CONFIG & DARK THEME ---
+st.set_page_config(page_title="EdgeLab Intelligence v20.0", layout="wide")
 
-# Custom CSS for Dark Mode & Betting UI
 st.markdown("""
 <style>
-    .main { background-color: #0E1117; color: #FFFFFF; }
-    .stMetric { background: #161b22; border: 1px solid #30363d; padding: 15px; border-radius: 12px; }
-    .score-box { background: #1a1c23; border: 1px solid #30363d; padding: 10px; border-radius: 8px; text-align: center; font-size: 1.8rem; font-weight: bold; border-top: 3px solid #00FFAA; }
-    .winner-tag { color: #00FFAA; font-weight: bold; background: #00FFAA22; padding: 4px 10px; border-radius: 6px; border: 1px solid #00FFAA; }
-    .edge-box { background: #00FFAA11; border-left: 4px solid #00FFAA; padding: 10px; border-radius: 4px; }
-    .market-label { color: #8b949e; font-size: 0.85rem; font-weight: bold; }
-    .accuracy-header { background: linear-gradient(90deg, #00FFAA22, #0E1117); padding: 15px; border-radius: 10px; border: 1px solid #30363d; margin-bottom: 20px; }
+    .main { background-color: #0E1117; color: #FFFFFF; font-family: 'Inter', sans-serif; }
+    .live-badge { 
+        background-color: #FF4B4B; color: white; padding: 3px 10px; 
+        border-radius: 4px; font-weight: bold; font-size: 0.75rem; 
+        animation: blinker 1.5s linear infinite;
+    }
+    @keyframes blinker { 50% { opacity: 0; } }
+    .winner-box { 
+        background-color: #1a1c23; border: 1px solid #00FFAA; 
+        padding: 10px; border-radius: 8px; margin-bottom: 15px;
+    }
+    .winner-name { color: #00FFAA; font-weight: 800; font-size: 1.2rem; }
+    .accuracy-banner {
+        background: linear-gradient(90deg, #00FFAA 0%, #0088ff 100%);
+        color: #0E1117; padding: 15px; border-radius: 10px;
+        text-align: center; font-weight: 800; margin-bottom: 20px;
+    }
+    [data-testid="stMetricValue"] { font-size: 1.8rem !important; color: #FFFFFF !important; font-weight: 700; }
+    .stMetric { background: #161b22; padding: 15px; border-radius: 10px; border: 1px solid #30363d; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. DATA REPOSITORY ---
-TEAM_MAP = {1610612738: {"full": "Boston Celtics", "short": "Celtics"}, 1610612752: {"full": "New York Knicks", "short": "Knicks"}, 1610612744: {"full": "Golden State Warriors", "short": "Warriors"}, 1610612765: {"full": "Detroit Pistons", "short": "Pistons"}, 1610612756: {"full": "Phoenix Suns", "short": "Suns"}, 1610612759: {"full": "San Antonio Spurs", "short": "Spurs"}, 1610612749: {"full": "Milwaukee Bucks", "short": "Bucks"}, 1610612742: {"full": "Dallas Mavericks", "short": "Mavericks"}, 1610612762: {"full": "Utah Jazz", "short": "Jazz"}, 1610612743: {"full": "Denver Nuggets", "short": "Nuggets"}, 1610612746: {"full": "LA Clippers", "short": "Clippers"}, 1610612747: {"full": "Los Angeles Lakers", "short": "Lakers"}}
-
-TEAM_DB = {"Boston Celtics": {"off": 122.1, "def": 110.4, "pace": 98.8, "h_bias": 3.4, "sigma": 9.2}, "New York Knicks": {"off": 118.5, "def": 112.2, "pace": 96.5, "h_bias": 2.8, "sigma": 8.5}, "Golden State Warriors": {"off": 117.2, "def": 116.8, "pace": 100.5, "h_bias": 3.1, "sigma": 11.8}, "Detroit Pistons": {"off": 114.8, "def": 110.2, "pace": 99.1, "h_bias": 2.5, "sigma": 9.5}, "Phoenix Suns": {"off": 116.5, "def": 115.2, "pace": 98.5, "h_bias": 2.2, "sigma": 10.4}, "San Antonio Spurs": {"off": 115.8, "def": 111.5, "pace": 101.2, "h_bias": 4.1, "sigma": 11.0}, "Milwaukee Bucks": {"off": 116.2, "def": 118.4, "pace": 100.8, "h_bias": 2.1, "sigma": 10.2}, "Dallas Mavericks": {"off": 118.5, "def": 116.2, "pace": 100.1, "h_bias": 2.5, "sigma": 11.5}, "Utah Jazz": {"off": 112.5, "def": 119.8, "pace": 101.5, "h_bias": 3.2, "sigma": 12.1}}
-
-VEGAS_MARKET = {
-    "Knicks@Warriors": {"spread": -7.5, "total": 226.5},
-    "Suns@Pistons": {"spread": -4.5, "total": 218.5}
+# --- 2. INTELLIGENCE REPOSITORY ---
+TEAM_DB = {
+    "Celtics": {"off": 122.1, "def": 110.4, "pace": 98.8, "id": 1610612738},
+    "Heat": {"off": 113.2, "def": 112.5, "pace": 96.2, "id": 1610612748},
+    "Knicks": {"off": 118.5, "def": 112.2, "pace": 96.5, "id": 1610612752},
+    "Warriors": {"off": 117.2, "def": 116.8, "pace": 100.5, "id": 1610612744},
+    "Suns": {"off": 116.5, "def": 115.2, "pace": 98.5, "id": 1610612756},
+    "Pistons": {"off": 114.8, "def": 110.2, "pace": 99.1, "id": 1610612765},
+    "Bucks": {"off": 116.2, "def": 118.4, "pace": 100.8, "id": 1610612749},
+    "Mavericks": {"off": 118.5, "def": 116.2, "pace": 100.1, "id": 1610612742}
 }
 
-# --- 3. CORE ANALYTICS ---
-def run_analytics(h_full, a_full, v_spread, v_total):
-    fb = {"off": 115.0, "def": 115.0, "pace": 100.0, "h_bias": 2.5, "sigma": 10.5}
-    h, a = TEAM_DB.get(h_full, fb), TEAM_DB.get(a_full, fb)
+# --- 3. ANALYTICS ENGINE ---
+def run_ai_prediction(h_id, a_id, h_nickname, a_nickname):
+    # Lookup stats in DB using nickname; fallback to average if missing
+    h_stats = TEAM_DB.get(h_nickname, {"off": 115.0, "def": 115.0, "pace": 99.0})
+    a_stats = TEAM_DB.get(a_nickname, {"off": 115.0, "def": 115.0, "pace": 99.0})
     
-    # Calculate Scores
-    pace = (h['pace'] + a['pace']) / 2
-    h_proj = ((h['off'] + h['h_bias'] + a['def']) / 2) * (pace / 100)
-    a_proj = ((a['off'] + h['def']) / 2) * (pace / 100)
+    pace = (h_stats['pace'] + a_stats['pace']) / 2
+    h_proj = ((h_stats['off'] + 2.5 + a_stats['def']) / 2) * (pace / 100)
+    a_proj = ((a_stats['off'] + h_stats['def']) / 2) * (pace / 100)
     
-    ai_total = h_proj + a_proj
-    ai_spread = a_proj - h_proj # Negative = Home Fav
+    win_prob = norm.cdf((h_proj - a_proj) / 10.0) * 100
+    winner_name = h_nickname if h_proj > a_proj else a_nickname
     
     return {
         "h_score": round(h_proj, 1), "a_score": round(a_proj, 1),
-        "ai_total": round(ai_total, 1), "ai_spread": round(ai_spread, 1),
-        "winner": h_full if h_proj > a_proj else a_full,
-        "win_prob": round(norm.cdf((h_proj - a_proj) / h['sigma']) * 100, 1),
-        "t_edge": round(abs(ai_total - v_total), 1),
-        "s_edge": round(abs(ai_spread - v_spread), 1)
+        "spread": round(a_proj - h_proj, 1),
+        "winner_name": winner_name,
+        "winner_id": h_id if h_proj > a_proj else a_id,
+        "prob": round(win_prob if h_proj > a_proj else (100 - win_prob), 1)
     }
 
 # --- 4. DATA FETCHING ---
-@st.cache_data(ttl=300)
-def fetch_master_data():
-    games = []
+@st.cache_data(ttl=60)
+def fetch_daily_slate(target_date):
     try:
-        raw = live_scoreboard.ScoreBoard().get_dict()
-        for g in raw['scoreboard']['games']:
-            games.append({
-                "h": f"{g['homeTeam']['teamCity']} {g['homeTeam']['teamName']}", "a": f"{g['awayTeam']['teamCity']} {g['awayTeam']['teamName']}",
-                "h_s": g['homeTeam']['score'], "a_s": g['awayTeam']['score'], "h_short": g['homeTeam']['teamName'], "a_short": g['awayTeam']['teamName'],
-                "status": g['gameStatusText'], "final": g['gameStatus'] == 3, "day": "Today"
-            })
-    except: pass
-    try:
-        tmrw = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
-        raw_tm = stats_scoreboard.ScoreBoardV2(game_date=tmrw).get_dict()
-        for r in raw_tm['resultSets'][0]['rowSet']:
-            h_info = TEAM_MAP.get(r[6], {"full": "Unknown", "short": "TBD"})
-            a_info = TEAM_MAP.get(r[7], {"full": "Unknown", "short": "TBD"})
-            games.append({"h": h_info['full'], "a": a_info['full'], "h_s": 0, "a_s": 0, "h_short": h_info['short'], "a_short": a_info['short'], "status": "Scheduled", "final": False, "day": "Tomorrow"})
-    except: pass
-    return games
-
-# --- 5. INTERFACE ---
-st.title("🏀 EdgeLab Ultimate v18.5")
-master_list = fetch_master_data()
-
-# Performance Tracker
-finals = [g for g in master_list if g['final']]
-if finals:
-    wins = sum(1 for g in finals if (g['h_s'] > g['a_s'] and run_analytics(g['h'], g['a'], 0, 0)['h_score'] > run_analytics(g['h'], g['a'], 0, 0)['a_score']) or (g['a_s'] > g['h_s'] and run_analytics(g['h'], g['a'], 0, 0)['a_score'] > run_analytics(g['h'], g['a'], 0, 0)['h_score']))
-    st.markdown(f"<div class='accuracy-header'>🎯 AI Accuracy: <b>{round(wins/len(finals)*100,1)}%</b> today</div>", unsafe_allow_html=True)
-
-for day in ["Today", "Tomorrow"]:
-    day_list = [g for g in master_list if g['day'] == day]
-    if day_list:
-        st.subheader(f"📅 {day}")
-        for g in day_list:
-            v_data = VEGAS_MARKET.get(f"{g['a_short']}@{g['h_short']}", {"spread": -4.0, "total": 224.0})
-            res = run_analytics(g['h'], g['a'], v_data['spread'], v_data['total'])
+        f_date = target_date.strftime('%m/%d/%Y')
+        sb = scoreboardv2.ScoreboardV2(game_date=f_date).get_dict()
+        games_raw = sb['resultSets'][0]['rowSet']
+        lines_raw = sb['resultSets'][1]['rowSet']
+        
+        games_list = []
+        for g in games_raw:
+            g_id, h_id, a_id = g[2], g[6], g[7]
+            # Match LineScore entries to get Nicknames and Scores
+            h_line = next((x for x in lines_raw if x[3] == h_id and x[2] == g_id), None)
+            a_line = next((x for x in lines_raw if x[3] == a_id and x[2] == g_id), None)
             
-            with st.container():
-                st.markdown(f"### {g['a']} @ {g['h']} | <small>{g['status']}</small>", unsafe_allow_html=True)
-                c1, c2, c3 = st.columns([1, 1.2, 1.5])
-                
-                with c1:
-                    st.markdown(f"<div class='score-box'>{g['a_s']} - {g['h_s']}</div>", unsafe_allow_html=True)
-                    st.markdown(f"<div style='text-align:center; margin-top:10px;'><span class='winner-tag'>PRED: {res['winner']}</span></div>", unsafe_allow_html=True)
+            if h_line and a_line:
+                games_list.append({
+                    "game_id": g_id, "status": g[4], 
+                    "h_id": h_id, "a_id": a_id,
+                    "h_nick": h_line[6], "a_nick": a_line[6],
+                    "h_score": h_line[22] or 0, "a_score": a_line[22] or 0, 
+                    "period": g[9] or 0
+                })
+        return games_list
+    except Exception as e:
+        return []
 
-                with c2:
-                    st.write("**AI PREDICTED SCORE**")
-                    st.metric(f"{g['a_short']}", res['a_score'])
-                    st.metric(f"{g['h_short']}", res['h_score'])
+# --- 5. UI RENDER ---
+st.title("🛡️ EdgeLab Intelligence v20.0")
+
+tabs = st.tabs(["Yesterday", "Today's Slate", "Tomorrow"])
+dates = [datetime.now() - timedelta(1), datetime.now(), datetime.now() + timedelta(1)]
+
+for i, tab in enumerate(tabs):
+    with tab:
+        current_date = dates[i]
+        st.subheader(f"Games for {current_date.strftime('%A, %b %d')}")
+        slate = fetch_daily_slate(current_date)
+        
+        if not slate:
+            st.info("No games scheduled for this date.")
+        else:
+            correct_picks, total_final = 0, 0
+            
+            for g in slate:
+                pred = run_ai_prediction(g['h_id'], g['a_id'], g['h_nick'], g['a_nick'])
                 
-                with c3:
-                    st.write("**AI EDGE ANALYSIS**")
+                # Accuracy tracking for Yesterday
+                if i == 0 and "Final" in g['status']:
+                    total_final += 1
+                    actual_winner_id = g['h_id'] if g['h_score'] > g['a_score'] else g['a_id']
+                    if pred['winner_id'] == actual_winner_id:
+                        correct_picks += 1
+
+                with st.container():
+                    c1, c2, c3 = st.columns([1, 2, 1])
+                    with c1: st.image(f"https://cdn.nba.com/logos/nba/{g['a_id']}/primary/L/logo.svg", width=60)
+                    with c2:
+                        st.write(f"**{g['a_nick']} @ {g['h_nick']}**")
+                        if "Live" in g['status'] or (g['period'] > 0 and i == 1):
+                            st.markdown("<span class='live-badge'>LIVE</span>", unsafe_allow_html=True)
+                        st.caption(f"Status: {g['status']}")
+                    with c3: st.image(f"https://cdn.nba.com/logos/nba/{g['h_id']}/primary/L/logo.svg", width=60)
+
                     st.markdown(f"""
-                    <div class='edge-box'>
-                        <span class='market-label'>TOTAL:</span> Vegas {v_data['total']} vs <b>AI {res['ai_total']}</b> (Edge: {res['t_edge']})<br>
-                        <span class='market-label'>SPREAD:</span> Vegas {v_data['spread']} vs <b>AI {res['ai_spread']}</b> (Edge: {res['s_edge']})<br>
-                        <span class='market-label'>WIN PROB:</span> <b>{res['win_prob']}%</b>
+                    <div class='winner-box'>
+                        <small style='color:#8b949e'>AI PREDICTION</small><br>
+                        <span class='winner-name'>{pred['winner_name']}</span> <small>({pred['prob']}%)</small>
                     </div>
                     """, unsafe_allow_html=True)
-                st.divider()
+
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("SCORE", f"{g['a_score']} - {g['h_score']}")
+                    m2.metric("AI SPREAD", pred['spread'])
+                    m3.metric("AI PROJ", f"{pred['a_score']} - {pred['h_score']}")
+                    st.divider()
+            
+            if i == 0 and total_final > 0:
+                acc = round((correct_picks / total_final) * 100, 1)
+                st.markdown(f"<div class='accuracy-banner'>YESTERDAY'S AI ACCURACY: {acc}% ({correct_picks}/{total_final})</div>", unsafe_allow_html=True)
+
+st.caption("v20.0 | Full Nickname Mapping & Accuracy Tracker")
